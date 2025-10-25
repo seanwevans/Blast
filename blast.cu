@@ -125,6 +125,43 @@ static inline char *u64toa(uint64_t val, char *out) {
   return out + (len - 1);
 }
 
+static inline char *dtoa(double val, char *out) {
+  char buf[32];
+  int len = snprintf(buf, sizeof(buf), "%.17g", val);
+  if (len < 0)
+    len = 0;
+  memcpy(out, buf, (size_t)len);
+  return out + len;
+}
+
+static inline char *write_csv_text(const uint8_t *data, size_t len, char *out) {
+  *out++ = '"';
+  for (size_t i = 0; i < len; i++) {
+    unsigned char c = data[i];
+    if (c == '"') {
+      *out++ = '"';
+      *out++ = '"';
+    } else {
+      *out++ = (char)c;
+    }
+  }
+  *out++ = '"';
+  return out;
+}
+
+static inline char *write_blob_hex(const uint8_t *data, size_t len, char *out) {
+  static const char hex[] = "0123456789ABCDEF";
+  *out++ = 'X';
+  *out++ = '\'';
+  for (size_t i = 0; i < len; i++) {
+    uint8_t byte = data[i];
+    *out++ = hex[byte >> 4];
+    *out++ = hex[byte & 0xF];
+  }
+  *out++ = '\'';
+  return out;
+}
+
 HD static inline uint64_t read_varint_scalar(const uint8_t *p, int *len) {
   uint64_t v = 0;
   for (int i = 0; i < 9; i++) {
@@ -186,6 +223,20 @@ static char *decode_record(const uint8_t *payload, size_t payload_len,
     if (serial_type == 0) {
       if (field_index == 1)
         out = u64toa(rowid_val, out);
+    } else if (serial_type == 7) {
+      if (data_pos + 8 <= payload_len) {
+        uint64_t bits = 0;
+        for (int b = 0; b < 8; b++)
+          bits = (bits << 8) | payload[data_pos + b];
+        data_pos += 8;
+        union {
+          uint64_t u;
+          double d;
+        } conv;
+        conv.u = bits;
+        out = dtoa(conv.d, out);
+      } else
+        *out++ = '?';
     } else if (serial_type >= 1 && serial_type <= 6) {
       static const int blut[7] = {0, 1, 2, 3, 4, 6, 8};
       int blen = blut[serial_type];
@@ -196,12 +247,21 @@ static char *decode_record(const uint8_t *payload, size_t payload_len,
         val = (val << 8) | payload[data_pos + b];
       data_pos += (size_t)blen;
       out = u64toa(val, out);
+    } else if (serial_type == 8) {
+      *out++ = '0';
+    } else if (serial_type == 9) {
+      *out++ = '1';
+    } else if (serial_type >= 12 && (serial_type % 2 == 0)) {
+      size_t blen = (size_t)((serial_type - 12) / 2);
+      if (data_pos + blen > payload_len)
+        blen = payload_len - data_pos;
+      out = write_blob_hex(payload + data_pos, blen, out);
+      data_pos += blen;
     } else if ((serial_type >= 13) && (serial_type % 2 == 1)) {
       size_t tlen = (size_t)((serial_type - 13) / 2);
       if (data_pos + tlen > payload_len)
         tlen = payload_len - data_pos;
-      memcpy(out, payload + data_pos, tlen);
-      out += tlen;
+      out = write_csv_text(payload + data_pos, tlen, out);
       data_pos += tlen;
     } else
       *out++ = '?';
