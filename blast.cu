@@ -717,12 +717,19 @@ int main(int argc, char **argv) {
   } else
 #endif
   {
-#pragma omp parallel for schedule(static, 8) reduction(+ : n_tasks)
+#pragma omp parallel for schedule(static, 8)
     for (int pi = 0; pi < leafs.count; pi++) {
       uint32_t pg = leafs.pages[pi];
       const uint8_t *page = db + pg * page_sz;
       int nc = (page[3] << 8) | page[4];
-      for (int c = 0; c < nc && c < MAX_CELLS; c++) {
+      int store_count = nc;
+      if (store_count < 0)
+        store_count = 0;
+      if (store_count > MAX_CELLS)
+        store_count = MAX_CELLS;
+
+      RecordTask local_tasks[MAX_CELLS];
+      for (int c = 0; c < store_count; c++) {
         uint16_t off = (page[8 + 2 * c] << 8) | page[8 + 2 * c + 1];
         int vlen1;
         uint64_t pay = read_varint_auto(page + off, &vlen1);
@@ -734,9 +741,12 @@ int main(int argc, char **argv) {
         t.page = pg;
         t.offset = (uint16_t)(off + vlen1 + vlen2);
         t.length = (uint16_t)pay;
-        tasks[pi * MAX_CELLS + c] = t;
+        local_tasks[c] = t;
       }
-      n_tasks += nc;
+
+      int base = __sync_fetch_and_add(&n_tasks, store_count);
+      for (int c = 0; c < store_count; c++)
+        tasks[base + c] = local_tasks[c];
     }
     fprintf(stderr, "[+] CPU parsed %d tasks\n", n_tasks);
   }

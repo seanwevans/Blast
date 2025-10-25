@@ -99,7 +99,7 @@ def test_blast_dump_matches_expected_output(tmp_path, monkeypatch, blast_binary)
         '4294967298,3,3,"Charlie",28,"Prefers OpenMP."',
         '4294967299,4,4,"Diana",35,"Thinks varints are cool."',
         '4294967300,5,5,"Eve",22,"Just here for the bytes."',
-        "0,0,",
+        '8589934592,1,"test_data",5',
     ]
 
     assert csv_lines == expected_lines
