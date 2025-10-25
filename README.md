@@ -3,8 +3,6 @@
 **BLAST** (Binary-Level Asynchronous SQLite-to-Text) is a *bare-metal*, high-throughput SQLite3 file dumper written in C + CUDA.  
 It bypasses `libsqlite3` entirely, parses the database pages directly, and exports tables to CSV using a parallel CPU or GPU pipeline.  
 
-The goal: **outrun both `sqlite3` and `sqlite3-dump` by an order of magnitude.**
-
 ---
 
 ## 🚀 Features
