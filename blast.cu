@@ -29,6 +29,15 @@ blast.cu
 
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
+#define CUDA_CHECK(expr)                                                      \
+  do {                                                                        \
+    cudaError_t _err = (expr);                                                \
+    if (_err != cudaSuccess) {                                                \
+      fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__,           \
+              cudaGetErrorString(_err));                                      \
+      exit(1);                                                                \
+    }                                                                         \
+  } while (0)
 #endif
 #ifdef __AVX2__
 #include <immintrin.h>
@@ -184,6 +193,8 @@ static inline char *u64toa(uint64_t val, char *out) {
     return u64toa_avx2(val, out);
 #endif
   return u64toa_scalar(val, out);
+}
+
 static inline char *dtoa(double val, char *out) {
   char buf[32];
   int len = snprintf(buf, sizeof(buf), "%.17g", val);
@@ -328,17 +339,28 @@ static char *decode_record(const uint8_t *payload, size_t payload_len,
 }
 
 #ifdef __CUDACC__
-__global__ void gpu_scan_pages(const uint8_t *db, size_t page_sz,
-                               size_t n_pages, RecordTask *out_tasks,
-                               int *total) {
-  int page_id = blockIdx.x;
-  if (page_id >= (int)n_pages)
+__global__ void gpu_scan_pages_batch(const uint8_t *pages, size_t page_sz,
+                                     int n_pages, const uint32_t *page_ids,
+                                     RecordTask *out_tasks, int *counts) {
+  int page_idx = blockIdx.x;
+  if (page_idx >= n_pages)
     return;
-  const uint8_t *page = db + page_id * page_sz;
-  if (page[0] != PAGE_LEAF)
+
+  const uint8_t *page = pages + (size_t)page_idx * page_sz;
+  int nc = 0;
+  if (page[0] == PAGE_LEAF)
+    nc = (page[3] << 8) | page[4];
+  if (nc > MAX_CELLS)
+    nc = MAX_CELLS;
+
+  if (threadIdx.x == 0)
+    counts[page_idx] = nc;
+  __syncthreads();
+
+  if (!nc)
     return;
-  int nc = (page[3] << 8) | page[4];
-  int base = atomicAdd(total, nc);
+
+  uint32_t page_no = page_ids[page_idx];
   for (int c = threadIdx.x; c < nc; c += blockDim.x) {
     uint16_t off = (page[8 + 2 * c] << 8) | page[8 + 2 * c + 1];
     int vlen1;
@@ -346,12 +368,12 @@ __global__ void gpu_scan_pages(const uint8_t *db, size_t page_sz,
     int vlen2;
     uint64_t rowid_val = read_varint_scalar(page + off + vlen1, &vlen2);
     RecordTask t;
-    t.row_id = ((uint64_t)page_id << 32) | c;
+    t.row_id = ((uint64_t)page_no << 32) | (uint32_t)c;
     t.rowid_val = rowid_val;
-    t.page = page_id;
+    t.page = page_no;
     t.offset = (uint16_t)(off + vlen1 + vlen2);
     t.length = (uint16_t)pay;
-    out_tasks[base + c] = t;
+    out_tasks[page_idx * MAX_CELLS + c] = t;
   }
 }
 #endif
@@ -556,26 +578,144 @@ int main(int argc, char **argv) {
 
 #ifdef __CUDACC__
   if (use_cuda) {
-    RecordTask *d_tasks;
-    int *d_total;
-    int zero = 0;
-    cudaMalloc(&d_tasks, leafs.count * MAX_CELLS * sizeof(RecordTask));
-    cudaMalloc(&d_total, sizeof(int));
-    cudaMemcpy(d_total, &zero, sizeof(int), cudaMemcpyHostToDevice);
-    uint8_t *d_db;
-    cudaMalloc(&d_db, db_sz);
-    cudaMemcpy(d_db, db, db_sz, cudaMemcpyHostToDevice);
-    for (int p = 0; p < leafs.count; p++)
-      gpu_scan_pages<<<1, 64>>>(d_db, page_sz, leafs.pages[p] + 1, d_tasks,
-                                d_total);
-    cudaDeviceSynchronize();
-    cudaMemcpy(&n_tasks, d_total, sizeof(int), cudaMemcpyDeviceToHost);
-    cudaMemcpy(tasks, d_tasks, n_tasks * sizeof(RecordTask),
-               cudaMemcpyDeviceToHost);
-    cudaFree(d_tasks);
-    cudaFree(d_total);
-    cudaFree(d_db);
-    fprintf(stderr, "[+] GPU decoded %d tasks\n", n_tasks);
+    const int pages_per_batch = 64;
+    const int num_streams = 2;
+
+    cudaStream_t streams[num_streams];
+    for (int i = 0; i < num_streams; i++)
+      CUDA_CHECK(cudaStreamCreate(&streams[i]));
+
+    uint8_t *d_pagebuf[num_streams];
+    RecordTask *d_tasks_buf[num_streams];
+    uint32_t *d_page_ids[num_streams];
+    int *d_counts_buf[num_streams];
+
+    uint8_t *h_pagebuf[num_streams];
+    RecordTask *h_taskbuf[num_streams];
+    uint32_t *h_page_ids[num_streams];
+    int *h_counts[num_streams];
+
+    for (int i = 0; i < num_streams; i++) {
+      CUDA_CHECK(cudaMalloc(&d_pagebuf[i], (size_t)pages_per_batch * page_sz));
+      CUDA_CHECK(cudaMalloc(&d_tasks_buf[i],
+                            (size_t)pages_per_batch * MAX_CELLS *
+                                sizeof(RecordTask)));
+      CUDA_CHECK(cudaMalloc(&d_page_ids[i],
+                            (size_t)pages_per_batch * sizeof(uint32_t)));
+      CUDA_CHECK(cudaMalloc(&d_counts_buf[i],
+                            (size_t)pages_per_batch * sizeof(int)));
+
+      CUDA_CHECK(cudaHostAlloc(&h_pagebuf[i],
+                               (size_t)pages_per_batch * page_sz,
+                               cudaHostAllocDefault));
+      CUDA_CHECK(cudaHostAlloc(&h_taskbuf[i],
+                               (size_t)pages_per_batch * MAX_CELLS *
+                                   sizeof(RecordTask),
+                               cudaHostAllocDefault));
+      CUDA_CHECK(cudaHostAlloc(&h_page_ids[i],
+                               (size_t)pages_per_batch * sizeof(uint32_t),
+                               cudaHostAllocDefault));
+      CUDA_CHECK(cudaHostAlloc(&h_counts[i],
+                               (size_t)pages_per_batch * sizeof(int),
+                               cudaHostAllocDefault));
+    }
+
+    int chunk_sizes[num_streams];
+    memset(chunk_sizes, 0, sizeof(chunk_sizes));
+
+    size_t tasks_capacity = (size_t)leafs.count * MAX_CELLS;
+    int total_tasks = 0;
+    int batch_idx = 0;
+    for (int start = 0; start < leafs.count; start += pages_per_batch) {
+      int slot = batch_idx % num_streams;
+      if (batch_idx >= num_streams) {
+        int sync_slot = slot;
+        CUDA_CHECK(cudaStreamSynchronize(streams[sync_slot]));
+        int processed_pages = chunk_sizes[sync_slot];
+        RecordTask *src_tasks = h_taskbuf[sync_slot];
+        int *src_counts = h_counts[sync_slot];
+        for (int p = 0; p < processed_pages; p++) {
+          int count = src_counts[p];
+          if (count < 0)
+            count = 0;
+          if (count > MAX_CELLS)
+            count = MAX_CELLS;
+          if ((size_t)total_tasks + (size_t)count > tasks_capacity)
+            count = (int)(tasks_capacity - (size_t)total_tasks);
+          for (int c = 0; c < count; c++) {
+            tasks[total_tasks++] = src_tasks[p * MAX_CELLS + c];
+          }
+        }
+      }
+
+      int chunk = pages_per_batch;
+      if (start + chunk > leafs.count)
+        chunk = leafs.count - start;
+      chunk_sizes[slot] = chunk;
+
+      for (int i = 0; i < chunk; i++) {
+        uint32_t pg = leafs.pages[start + i];
+        memcpy(h_pagebuf[slot] + (size_t)i * page_sz,
+               db + (size_t)pg * page_sz, page_sz);
+        h_page_ids[slot][i] = pg;
+      }
+
+      CUDA_CHECK(cudaMemcpyAsync(d_pagebuf[slot], h_pagebuf[slot],
+                                 (size_t)chunk * page_sz,
+                                 cudaMemcpyHostToDevice, streams[slot]));
+      CUDA_CHECK(cudaMemcpyAsync(d_page_ids[slot], h_page_ids[slot],
+                                 (size_t)chunk * sizeof(uint32_t),
+                                 cudaMemcpyHostToDevice, streams[slot]));
+      gpu_scan_pages_batch<<<chunk, 64, 0, streams[slot]>>>(
+          d_pagebuf[slot], page_sz, chunk, d_page_ids[slot],
+          d_tasks_buf[slot], d_counts_buf[slot]);
+      CUDA_CHECK(cudaGetLastError());
+      CUDA_CHECK(cudaMemcpyAsync(h_counts[slot], d_counts_buf[slot],
+                                 (size_t)chunk * sizeof(int),
+                                 cudaMemcpyDeviceToHost, streams[slot]));
+      CUDA_CHECK(cudaMemcpyAsync(h_taskbuf[slot], d_tasks_buf[slot],
+                                 (size_t)chunk * MAX_CELLS *
+                                     sizeof(RecordTask),
+                                 cudaMemcpyDeviceToHost, streams[slot]));
+
+      batch_idx++;
+    }
+
+    int pending = batch_idx < num_streams ? batch_idx : num_streams;
+    for (int i = 0; i < pending; i++) {
+      int slot = (batch_idx - pending + i) % num_streams;
+      CUDA_CHECK(cudaStreamSynchronize(streams[slot]));
+      int processed_pages = chunk_sizes[slot];
+      RecordTask *src_tasks = h_taskbuf[slot];
+      int *src_counts = h_counts[slot];
+      for (int p = 0; p < processed_pages; p++) {
+        int count = src_counts[p];
+        if (count < 0)
+          count = 0;
+        if (count > MAX_CELLS)
+          count = MAX_CELLS;
+        if ((size_t)total_tasks + (size_t)count > tasks_capacity)
+          count = (int)(tasks_capacity - (size_t)total_tasks);
+        for (int c = 0; c < count; c++) {
+          tasks[total_tasks++] = src_tasks[p * MAX_CELLS + c];
+        }
+      }
+    }
+
+    for (int i = 0; i < num_streams; i++) {
+      CUDA_CHECK(cudaFree(d_pagebuf[i]));
+      CUDA_CHECK(cudaFree(d_tasks_buf[i]));
+      CUDA_CHECK(cudaFree(d_page_ids[i]));
+      CUDA_CHECK(cudaFree(d_counts_buf[i]));
+      CUDA_CHECK(cudaFreeHost(h_pagebuf[i]));
+      CUDA_CHECK(cudaFreeHost(h_taskbuf[i]));
+      CUDA_CHECK(cudaFreeHost(h_page_ids[i]));
+      CUDA_CHECK(cudaFreeHost(h_counts[i]));
+      CUDA_CHECK(cudaStreamDestroy(streams[i]));
+    }
+
+    n_tasks = total_tasks;
+    fprintf(stderr, "[+] GPU decoded %d tasks (async streaming)\n", n_tasks);
   } else
 #endif
   {
