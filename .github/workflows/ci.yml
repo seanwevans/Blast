@@ -31,16 +31,11 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang-format
 
-      - name: Run Black
-        run: |
-          black .
+      - name: Install development dependencies
+        run: make install-dev
 
-      - name: Format CUDA sources
-        run: |
-          cuda_sources=$(git ls-files '*.cu')
-          if [ -n "$cuda_sources" ]; then
-            clang-format -i $cuda_sources
-          fi
+      - name: Format code
+        run: make format
 
       - name: Commit changes
         uses: stefanzweifel/git-auto-commit-action@v5
@@ -62,10 +57,8 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install dependencies
-        run: |
-          python -m pip install --upgrade pip
-          pip install -r requirements-dev.txt
+      - name: Install development dependencies
+        run: make install-dev
 
-      - name: Run pytest
-        run: pytest
+      - name: Run tests
+        run: make test
