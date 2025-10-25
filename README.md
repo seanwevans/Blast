@@ -82,37 +82,3 @@ Each thread writes directly into its mapped output region:
 <row_id>,<raw_payload_bytes>\n
 ```
 Payloads are truncated to 100 bytes for safety; adjust as needed.
-
----
-
-## ⚡ Performance
-
-| Stage | CPU (OpenMP) | GPU (CUDA) |
-|--------|---------------|------------|
-| Page scanning | Parallel (8–32 threads) | Each page per block (up to 10⁶ pages/s) |
-| Varint decoding | Scalar | GPU parallel, ~1.5–2× faster |
-| Output write | Memory-mapped concurrent | Shared CPU path |
-
-> On modern hardware (Ryzen 9 + RTX 4080), BLAST achieves **~20–30×** the throughput of the SQLite CLI dumper on multi-GB databases.
-
----
-
-## 🧠 Design Notes
-
-- **PAGE_LEAF = 13** restricts processing to table-leaf pages.  
-- **MAX_CELLS = 256** sets an upper bound per page; adjust for wider tables.  
-- `read_varint()` implements SQLite’s 1- to 9-byte varint format.  
-- GPU kernel uses `atomicAdd` to append record tasks into a global buffer.  
-- Output is written once; no locking, no buffering, no `fprintf()` calls.
-
----
-
-## 🧰 Extending BLAST
-
-Ideas for next iterations:
-
-- [ ] Add support for REAL, TEXT, and BLOB serialization using serial-type headers.  
-- [ ] Implement asynchronous GPU–CPU streaming (`cudaMemcpyAsync`) to overlap compute and I/O.  
-- [ ] Integrate AVX2 SIMD integer→ASCII routines for CPU writer.  
-- [ ] Add schema filtering (`--table <name>`).  
-- [ ] Output to Parquet via Arrow writer for analytics workloads.
