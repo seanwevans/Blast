@@ -263,55 +263,88 @@ static void collect_table_pages(const uint8_t *db, size_t db_sz, size_t page_sz,
   collect_table_pages(db, db_sz, page_sz, right, out);
 }
 
+static uint32_t find_table_rootpage_page(const uint8_t *db, size_t db_sz,
+                                         size_t page_sz, uint32_t page_no,
+                                         const char *table_name) {
+  if (page_no == 0)
+    return 0;
+  size_t off = (size_t)(page_no - 1) * page_sz;
+  if (off + page_sz > db_sz)
+    return 0;
+
+  const uint8_t *page = db + off;
+  uint8_t type = page[0];
+  int nc = (page[3] << 8) | page[4];
+
+  if (type == PAGE_LEAF) {
+    for (int c = 0; c < nc; c++) {
+      uint16_t cell_off = (page[8 + 2 * c] << 8) | page[8 + 2 * c + 1];
+      int vlen1;
+      uint64_t payload_len = read_varint_scalar(page + cell_off, &vlen1);
+      int vlen2;
+      (void)read_varint_scalar(page + cell_off + vlen1, &vlen2);
+      const uint8_t *payload = page + cell_off + vlen1 + vlen2;
+      int hdrlen_bytes;
+      uint64_t hdrlen = read_varint_scalar(payload, &hdrlen_bytes);
+      size_t header_end = hdrlen;
+      size_t hpos = (size_t)hdrlen_bytes;
+      size_t dpos = header_end;
+      char type_text[16] = {0}, name[128] = {0}, tbl[128] = {0};
+      uint32_t root = 0;
+      for (int col = 0; hpos < header_end; col++) {
+        int slen;
+        uint64_t st = read_varint_scalar(payload + hpos, &slen);
+        hpos += (size_t)slen;
+        if (st == 0)
+          continue;
+        if (st >= 13 && (st % 2)) {
+          uint64_t len = (st - 13) / 2;
+          if (dpos + len > payload_len)
+            len = payload_len - dpos;
+          if (col == 0)
+            memcpy(type_text, payload + dpos, (len < 15 ? len : 15));
+          if (col == 1)
+            memcpy(name, payload + dpos, (len < 127 ? len : 127));
+          if (col == 2)
+            memcpy(tbl, payload + dpos, (len < 127 ? len : 127));
+          dpos += (size_t)len;
+        } else if (st >= 1 && st <= 6) {
+          static const int blut[7] = {0, 1, 2, 3, 4, 6, 8};
+          int blen = blut[st];
+          if ((size_t)dpos + blen > payload_len)
+            blen = (int)(payload_len - dpos);
+          if (blen == 4 && col == 3) {
+            root = (payload[dpos] << 24) | (payload[dpos + 1] << 16) |
+                   (payload[dpos + 2] << 8) | payload[dpos + 3];
+          }
+          dpos += (size_t)blen;
+        }
+      }
+      if (!strcmp(type_text, "table") && (!strcmp(name, table_name) ||
+                                           !strcmp(tbl, table_name)))
+        return root;
+    }
+  } else if (type == PAGE_INTERIOR) {
+    for (int c = 0; c < nc; c++) {
+      uint16_t cell_off = (page[12 + 2 * c] << 8) | page[12 + 2 * c + 1];
+      uint32_t child = (page[cell_off] << 24) | (page[cell_off + 1] << 16) |
+                       (page[cell_off + 2] << 8) | (page[cell_off + 3]);
+      uint32_t res =
+          find_table_rootpage_page(db, db_sz, page_sz, child, table_name);
+      if (res)
+        return res;
+    }
+    uint32_t right = (page[8] << 24) | (page[9] << 16) | (page[10] << 8) |
+                     (page[11]);
+    return find_table_rootpage_page(db, db_sz, page_sz, right, table_name);
+  }
+
+  return 0;
+}
+
 static uint32_t find_table_rootpage(const uint8_t *db, size_t db_sz,
                                     size_t page_sz, const char *table_name) {
-  const uint8_t *page = db + 0 * page_sz;
-  int nc = (page[3] << 8) | page[4];
-  for (int c = 0; c < nc; c++) {
-    uint16_t off = (page[8 + 2 * c] << 8) | page[8 + 2 * c + 1];
-    int vlen1;
-    uint64_t pay = read_varint_scalar(page + off, &vlen1);
-    int vlen2;
-    uint64_t rowid = read_varint_scalar(page + off + vlen1, &vlen2);
-    const uint8_t *payload = page + off + vlen1 + vlen2;
-    int hdrlen_bytes;
-    uint64_t hdrlen = read_varint_scalar(payload, &hdrlen_bytes);
-    size_t header_end = hdrlen;
-    size_t hpos = hdrlen_bytes;
-    size_t dpos = header_end;
-    char type[16] = {0}, name[128] = {0}, tbl[128] = {0};
-    uint32_t root = 0;
-    for (int col = 0; hpos < header_end; col++) {
-      int slen;
-      uint64_t st = read_varint_scalar(payload + hpos, &slen);
-      hpos += slen;
-      if (st == 0)
-        continue;
-      if (st >= 13 && (st % 2)) {
-        uint64_t len = (st - 13) / 2;
-        if (dpos + len > pay)
-          dpos = pay - len;
-        if (col == 0)
-          memcpy(type, payload + dpos, (len < 15 ? len : 15));
-        if (col == 1)
-          memcpy(name, payload + dpos, (len < 127 ? len : 127));
-        if (col == 2)
-          memcpy(tbl, payload + dpos, (len < 127 ? len : 127));
-        dpos += len;
-      } else if (st >= 1 && st <= 6) {
-        static const int blut[7] = {0, 1, 2, 3, 4, 6, 8};
-        int blen = blut[st];
-        if (blen == 4 && col == 3) {
-          root = (payload[dpos] << 24) | (payload[dpos + 1] << 16) |
-                 (payload[dpos + 2] << 8) | payload[dpos + 3];
-        }
-        dpos += blen;
-      }
-    }
-    if (!strcmp(type, "table") && !strcmp(tbl, table_name))
-      return root;
-  }
-  return 0;
+  return find_table_rootpage_page(db, db_sz, page_sz, 1, table_name);
 }
 
 static void cpu_write_csv(const uint8_t *db, size_t page_sz, RecordTask *tasks,
