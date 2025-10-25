@@ -1,0 +1,58 @@
+# BLAST project .gitignore
+
+# Build artifacts
+blast
+blast.exe
+blast.out
+*.o
+*.obj
+*.so
+*.a
+*.dll
+*.lib
+*.dylib
+*.exp
+*.pdb
+
+# CUDA intermediate files
+*.cu.cpp
+*.cu.d
+*.ptx
+*.cubin
+*.fatbin
+
+# Logs and profiling data
+*.log
+*.nvvp
+profile.json
+perf.data
+perf.data.old
+
+# Temporary and cache files
+*.tmp
+*.bak
+*.swp
+*.swo
+*.DS_Store
+Thumbs.db
+
+# Output data
+*.csv
+*.db
+*.sqlite
+*.sqlite3
+
+# Build directories
+build/
+dist/
+out/
+bin/
+obj/
+__pycache__/
+
+# Editor/IDE directories
+.vscode/
+.idea/
+.clion/
+.ccls-cache/
+compile_commands.json
