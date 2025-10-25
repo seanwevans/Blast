@@ -56,3 +56,5 @@ __pycache__/
 .clion/
 .ccls-cache/
 compile_commands.json
+
+toy.db
