@@ -9,6 +9,7 @@ import os
 
 DB_FILE = "toy.db"
 
+
 def make_toy_db():
     if os.path.exists(DB_FILE):
         os.remove(DB_FILE)
@@ -16,14 +17,16 @@ def make_toy_db():
     cur = conn.cursor()
 
     # Create a table with multiple data types
-    cur.execute("""
+    cur.execute(
+        """
         CREATE TABLE test_data (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             name TEXT,
             age INTEGER,
             comment TEXT
         );
-    """)
+    """
+    )
 
     # Insert a few rows
     rows = [
@@ -38,6 +41,7 @@ def make_toy_db():
     conn.commit()
     conn.close()
     print(f"[+] Created test database: {DB_FILE}")
+
 
 if __name__ == "__main__":
     make_toy_db()

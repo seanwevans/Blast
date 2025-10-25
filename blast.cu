@@ -29,14 +29,14 @@ blast.cu
 
 #ifdef __CUDACC__
 #include <cuda_runtime.h>
-#define CUDA_CHECK(expr)                                                      \
-  do {                                                                        \
-    cudaError_t _err = (expr);                                                \
-    if (_err != cudaSuccess) {                                                \
-      fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__,           \
-              cudaGetErrorString(_err));                                      \
-      exit(1);                                                                \
-    }                                                                         \
+#define CUDA_CHECK(expr)                                                       \
+  do {                                                                         \
+    cudaError_t _err = (expr);                                                 \
+    if (_err != cudaSuccess) {                                                 \
+      fprintf(stderr, "CUDA error %s:%d: %s\n", __FILE__, __LINE__,            \
+              cudaGetErrorString(_err));                                       \
+      exit(1);                                                                 \
+    }                                                                          \
   } while (0)
 #endif
 #ifdef __AVX2__
@@ -459,8 +459,8 @@ static uint32_t find_table_rootpage_page(const uint8_t *db, size_t db_sz,
           dpos += (size_t)blen;
         }
       }
-      if (!strcmp(type_text, "table") && (!strcmp(name, table_name) ||
-                                           !strcmp(tbl, table_name)))
+      if (!strcmp(type_text, "table") &&
+          (!strcmp(name, table_name) || !strcmp(tbl, table_name)))
         return root;
     }
   } else if (type == PAGE_INTERIOR) {
@@ -473,8 +473,8 @@ static uint32_t find_table_rootpage_page(const uint8_t *db, size_t db_sz,
       if (res)
         return res;
     }
-    uint32_t right = (page[8] << 24) | (page[9] << 16) | (page[10] << 8) |
-                     (page[11]);
+    uint32_t right =
+        (page[8] << 24) | (page[9] << 16) | (page[10] << 8) | (page[11]);
     return find_table_rootpage_page(db, db_sz, page_sz, right, table_name);
   }
 
@@ -597,16 +597,15 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < num_streams; i++) {
       CUDA_CHECK(cudaMalloc(&d_pagebuf[i], (size_t)pages_per_batch * page_sz));
-      CUDA_CHECK(cudaMalloc(&d_tasks_buf[i],
-                            (size_t)pages_per_batch * MAX_CELLS *
-                                sizeof(RecordTask)));
+      CUDA_CHECK(
+          cudaMalloc(&d_tasks_buf[i],
+                     (size_t)pages_per_batch * MAX_CELLS * sizeof(RecordTask)));
       CUDA_CHECK(cudaMalloc(&d_page_ids[i],
                             (size_t)pages_per_batch * sizeof(uint32_t)));
-      CUDA_CHECK(cudaMalloc(&d_counts_buf[i],
-                            (size_t)pages_per_batch * sizeof(int)));
+      CUDA_CHECK(
+          cudaMalloc(&d_counts_buf[i], (size_t)pages_per_batch * sizeof(int)));
 
-      CUDA_CHECK(cudaHostAlloc(&h_pagebuf[i],
-                               (size_t)pages_per_batch * page_sz,
+      CUDA_CHECK(cudaHostAlloc(&h_pagebuf[i], (size_t)pages_per_batch * page_sz,
                                cudaHostAllocDefault));
       CUDA_CHECK(cudaHostAlloc(&h_taskbuf[i],
                                (size_t)pages_per_batch * MAX_CELLS *
@@ -655,8 +654,8 @@ int main(int argc, char **argv) {
 
       for (int i = 0; i < chunk; i++) {
         uint32_t pg = leafs.pages[start + i];
-        memcpy(h_pagebuf[slot] + (size_t)i * page_sz,
-               db + (size_t)pg * page_sz, page_sz);
+        memcpy(h_pagebuf[slot] + (size_t)i * page_sz, db + (size_t)pg * page_sz,
+               page_sz);
         h_page_ids[slot][i] = pg;
       }
 
@@ -667,15 +666,14 @@ int main(int argc, char **argv) {
                                  (size_t)chunk * sizeof(uint32_t),
                                  cudaMemcpyHostToDevice, streams[slot]));
       gpu_scan_pages_batch<<<chunk, 64, 0, streams[slot]>>>(
-          d_pagebuf[slot], page_sz, chunk, d_page_ids[slot],
-          d_tasks_buf[slot], d_counts_buf[slot]);
+          d_pagebuf[slot], page_sz, chunk, d_page_ids[slot], d_tasks_buf[slot],
+          d_counts_buf[slot]);
       CUDA_CHECK(cudaGetLastError());
       CUDA_CHECK(cudaMemcpyAsync(h_counts[slot], d_counts_buf[slot],
                                  (size_t)chunk * sizeof(int),
                                  cudaMemcpyDeviceToHost, streams[slot]));
       CUDA_CHECK(cudaMemcpyAsync(h_taskbuf[slot], d_tasks_buf[slot],
-                                 (size_t)chunk * MAX_CELLS *
-                                     sizeof(RecordTask),
+                                 (size_t)chunk * MAX_CELLS * sizeof(RecordTask),
                                  cudaMemcpyDeviceToHost, streams[slot]));
 
       batch_idx++;
