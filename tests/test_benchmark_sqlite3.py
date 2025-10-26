@@ -6,7 +6,9 @@ import make_toy_db
 import benchmark_sqlite3
 
 
-@pytest.mark.skipif(shutil.which("sqlite3") is None, reason="sqlite3 CLI is required for the benchmark")
+@pytest.mark.skipif(
+    shutil.which("sqlite3") is None, reason="sqlite3 CLI is required for the benchmark"
+)
 def test_benchmark_produces_outputs(tmp_path, monkeypatch, blast_binary):
     db_path = tmp_path / "toy.db"
     outputs_dir = tmp_path / "outputs"

@@ -101,14 +101,17 @@ def _run_sqlite3_dump(
     output_path: Path,
 ) -> float:
     safe_table = table.replace('"', '""')
-    script = "\n".join(
-        [
-            ".mode csv",
-            ".headers off",
-            f".once {output_path}",
-            f'SELECT rowid, * FROM "{safe_table}";',
-        ]
-    ) + "\n"
+    script = (
+        "\n".join(
+            [
+                ".mode csv",
+                ".headers off",
+                f".once {output_path}",
+                f'SELECT rowid, * FROM "{safe_table}";',
+            ]
+        )
+        + "\n"
+    )
 
     start = time.perf_counter()
     subprocess.run(
@@ -206,11 +209,15 @@ def benchmark(
             sqlite_output = outputs_root / f"sqlite3_run{idx}.csv"
             blast_output = outputs_root / f"blast_run{idx}.csv"
 
-            sqlite_elapsed = _run_sqlite3_dump(sqlite3_cli, db_path, table_name, sqlite_output)
+            sqlite_elapsed = _run_sqlite3_dump(
+                sqlite3_cli, db_path, table_name, sqlite_output
+            )
             sqlite_durations.append(sqlite_elapsed)
             sqlite_sizes.append(sqlite_output.stat().st_size)
 
-            blast_elapsed = _run_blast_dump(blast_binary_path, db_path, blast_output, use_cuda)
+            blast_elapsed = _run_blast_dump(
+                blast_binary_path, db_path, blast_output, use_cuda
+            )
             blast_durations.append(blast_elapsed)
             blast_sizes.append(blast_output.stat().st_size)
 
@@ -264,7 +271,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         "--table",
         help="Name of the table to export. Defaults to the first user table.",
     )
-    parser.add_argument("--runs", type=int, default=3, help="How many times to run each dumper.")
+    parser.add_argument(
+        "--runs", type=int, default=3, help="How many times to run each dumper."
+    )
     parser.add_argument(
         "--blast-binary",
         type=Path,
@@ -275,7 +284,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         type=Path,
         help="Directory where CSV outputs should be stored. Defaults to a temporary folder.",
     )
-    parser.add_argument("--cuda", action="store_true", help="Run BLAST with the --cuda flag enabled.")
+    parser.add_argument(
+        "--cuda", action="store_true", help="Run BLAST with the --cuda flag enabled."
+    )
 
     args = parser.parse_args(argv)
 
@@ -293,7 +304,9 @@ def main(argv: Optional[List[str]] = None) -> int:
             previous = toy_module.DB_FILE
             toy_module.DB_FILE = str(db_path)
             toy_module.make_toy_db()
-        except Exception as exc:  # pragma: no cover - defensive, should not happen in tests
+        except (
+            Exception
+        ) as exc:  # pragma: no cover - defensive, should not happen in tests
             raise BenchmarkError(f"Failed to generate toy database: {exc}") from exc
         finally:
             if toy_module is not None and previous is not None:
