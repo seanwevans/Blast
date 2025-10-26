@@ -82,3 +82,26 @@ Each thread writes directly into its mapped output region:
 <row_id>,<raw_payload_bytes>\n
 ```
 Payloads are truncated to 100 bytes for safety; adjust as needed.
+
+---
+
+## 📈 Benchmark Against `sqlite3`
+
+Use `benchmark_sqlite3.py` to compare BLAST's dumping speed with the reference
+`sqlite3` CLI. The script exports a table to CSV multiple times with both
+tools, measures wall-clock duration, and reports per-run timings, averages, and
+output sizes.
+
+```bash
+# Benchmark a custom database
+python benchmark_sqlite3.py path/to/database.db --runs 5
+
+# Quickly try it with the bundled toy database
+python benchmark_sqlite3.py
+
+# Reuse an existing BLAST binary and keep the generated CSV outputs
+python benchmark_sqlite3.py my.db --blast-binary ./blast --output-dir ./dumps
+```
+
+By default the script exports the first user table it finds, but a specific
+table can be selected via `--table name`.
